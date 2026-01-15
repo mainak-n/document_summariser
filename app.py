@@ -117,7 +117,7 @@ if prompt := st.chat_input("Inquire about your documents..."):
             res_area = st.empty()
             with st.status("Searching context...", expanded=False) as status:
                 try:
-                    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", transport="rest")
+                    llm = ChatGoogleGenerativeAI(model="gemma-3-27b-it", transport="rest")
                     docs = st.session_state.brain.similarity_search(prompt, k=6)
                     
                     context = ""
