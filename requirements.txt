@@ -8,3 +8,4 @@ pypdf
 tiktoken
 python-dotenv
 PyPDF2
+tenacity
