@@ -1,138 +1,137 @@
+import streamlit as st
 import os
-import requests
 import time
-from flask import Flask, request
-from dotenv import load_dotenv
-
-# --- IMPORTS ---
-from langchain.chains.question_answering import load_qa_chain
+from langchain_community.document_loaders import PyPDFLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
-from langchain_community.document_loaders import PyPDFLoader, DirectoryLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.chains.question_answering import load_qa_chain
 
-load_dotenv()
-app = Flask(__name__)
+# --- PAGE CONFIG ---
+st.set_page_config(page_title="PDF Brain Chat", layout="wide")
+st.title("🧠 PDF Chat (Stability & Persistence Mode)")
 
-# --- CONFIGURATION ---
-API_KEY = os.environ.get("GOOGLE_API_KEY")
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-WEBHOOK_URL = os.environ.get("RENDER_EXTERNAL_URL") 
+# --- CONFIGURATION & SECRETS ---
+# Look for GOOGLE_API_KEY in Streamlit Secrets
+if "GOOGLE_API_KEY" in st.secrets:
+    API_KEY = st.secrets["GOOGLE_API_KEY"]
+else:
+    API_KEY = st.sidebar.text_input("Enter Google API Key", type="password")
 
-# --- STABILITY-FOCUSED BRAIN FUNCTION ---
-def build_brain_if_missing():
-    if not os.path.exists("faiss_index"):
-        print("🧠 Brain not found! Creating it now...")
-        try:
-            if not os.path.exists("data"):
-                os.makedirs("data") 
-                print("⚠️ No data folder found. Created empty one.")
-                return
+INDEX_PATH = "faiss_index"
 
-            loader = DirectoryLoader("data", glob="*.pdf", loader_cls=PyPDFLoader)
-            documents = loader.load()
-            
-            if not documents:
-                print("⚠️ No PDFs found in data folder.")
-                return
+# --- FUNCTIONS ---
 
-            text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-            text_chunks = text_splitter.split_documents(documents)
-            
-            embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", google_api_key=API_KEY)
-
-            # --- STABILITY FIX: BATCHED EMBEDDING ---
-            batch_size = 5  # Small batches to avoid 504 Deadline Exceeded
-            sleep_time = 2  # Pause to avoid Rate Limits
-            
-            print(f"Total chunks to process: {len(text_chunks)}")
-            
-            # Initialize Vector Store with the first batch
-            vector_store = FAISS.from_documents(text_chunks[:batch_size], embeddings)
-            time.sleep(sleep_time)
-
-            # Process remaining batches
-            for i in range(batch_size, len(text_chunks), batch_size):
-                batch = text_chunks[i : i + batch_size]
-                
-                # Retry Logic for network spikes
-                for attempt in range(3):
-                    try:
-                        vector_store.add_documents(batch)
-                        print(f"✅ Processed {i + len(batch)}/{len(text_chunks)}...")
-                        break
-                    except Exception as e:
-                        if attempt == 2: raise e
-                        print(f"⚠️ Retrying batch due to: {e}")
-                        time.sleep(5 * (attempt + 1))
-                
-                time.sleep(sleep_time)
-
-            vector_store.save_local("faiss_index")
-            print("🎉 Brain created successfully on the server!")
-            
-        except Exception as e:
-            print(f"❌ Error creating brain: {e}")
-    else:
-        print("🧠 Brain already exists.")
-
-# Run builder on startup
-build_brain_if_missing()
-
-# --- AI SETUP ---
-def get_ai_response(user_text):
+def build_vector_store(uploaded_file):
+    """Processes PDF in small batches to avoid 504 Deadline Exceeded."""
     try:
-        if not API_KEY:
-            return "Error: Google API Key is missing."
-
+        # Save temp file
+        with open("temp.pdf", "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        
+        # Load and Split
+        loader = PyPDFLoader("temp.pdf")
+        documents = loader.load()
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        chunks = text_splitter.split_documents(documents)
+        
         embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", google_api_key=API_KEY)
         
-        # Load the index
-        if not os.path.exists("faiss_index"):
-            return "My brain is empty. Please upload PDFs to the 'data' folder."
+        # --- BATCHED PROCESSING ---
+        batch_size = 3  # Small batches for stability
+        sleep_time = 2  # Pause for rate limits
+        
+        progress_bar = st.progress(0, text="Creating Brain...")
+        
+        # Initialize with first batch
+        vector_store = FAISS.from_documents(chunks[:batch_size], embeddings)
+        time.sleep(sleep_time)
+        
+        # Loop through remaining batches
+        for i in range(batch_size, len(chunks), batch_size):
+            batch = chunks[i : i + batch_size]
             
-        vector_store = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
-        docs = vector_store.similarity_search(user_text, k=3)
+            # Retry logic
+            for attempt in range(3):
+                try:
+                    vector_store.add_documents(batch)
+                    break
+                except Exception:
+                    if attempt == 2: raise
+                    time.sleep(5)
+            
+            progress_bar.progress(i / len(chunks), text=f"Chunk {i}/{len(chunks)} processed...")
+            time.sleep(sleep_time)
         
-        # Use high timeout for the LLM response
-        llm = ChatGoogleGenerativeAI(
-            model="gemma-3-27b-it", # Flash is faster and more stable for bots
-            google_api_key=API_KEY, 
-            temperature=0.3,
-            timeout=120, # Increased timeout
-            convert_system_message_to_human=True
-        )
-        
-        chain = load_qa_chain(llm, chain_type="stuff")
-        return chain.run(input_documents=docs, question=user_text)
-        
-    except Exception as e:
-        print(f"AI Error: {e}")
-        return "I encountered an error connecting to my brain."
+        # Save locally like your reference code
+        vector_store.save_local(INDEX_PATH)
+        progress_bar.empty()
+        return vector_store
 
-# --- ROUTES ---
-@app.route("/", methods=["GET"])
-def index():
-    return "Telegram Bot is Running! 🚀"
+    finally:
+        if os.path.exists("temp.pdf"):
+            os.remove("temp.pdf")
 
-@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
-def telegram_webhook():
-    update = request.get_json()
-    if "message" in update and "text" in update["message"]:
-        chat_id = update["message"]["chat"]["id"]
-        user_text = update["message"]["text"]
-        
-        answer = get_ai_response(user_text)
+# --- SIDEBAR ---
+with st.sidebar:
+    st.header("Upload Center")
+    uploaded_file = st.file_uploader("Upload a PDF", type="pdf")
+    
+    if st.button("Build/Reset Brain"):
+        if uploaded_file and API_KEY:
+            with st.spinner("Processing..."):
+                st.session_state.vector_store = build_vector_store(uploaded_file)
+                st.success("Brain created and saved!")
+        else:
+            st.error("Missing File or API Key")
 
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": answer})
-    return "OK", 200
+# --- CHAT LOGIC ---
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-@app.route("/set_webhook", methods=["GET"])
-def set_webhook():
-    webhook_endpoint = f"{WEBHOOK_URL}/{TELEGRAM_TOKEN}"
-    telegram_api = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
-    response = requests.post(telegram_api, json={"url": webhook_endpoint})
-    return f"Webhook setup result: {response.text}"
+# Display history
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+# User Input
+if prompt := st.chat_input("Ask a question about your PDF..."):
+    if not API_KEY:
+        st.error("Please add your API Key")
+    else:
+        # Add user message
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        # Generate AI Response
+        with st.chat_message("assistant"):
+            try:
+                # Load Embeddings
+                embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", google_api_key=API_KEY)
+                
+                # Load Local Index (Safe check)
+                if os.path.exists(INDEX_PATH):
+                    vector_store = FAISS.load_local(INDEX_PATH, embeddings, allow_dangerous_deserialization=True)
+                    docs = vector_store.similarity_search(prompt, k=4)
+                    
+                    # LLM Setup from your reference code
+                    llm = ChatGoogleGenerativeAI(
+                        model="gemini-1.5-flash", 
+                        google_api_key=API_KEY, 
+                        temperature=0.3,
+                        timeout=120,
+                        convert_system_message_to_human=True
+                    )
+                    
+                    # Load QA Chain from your reference code
+                    chain = load_qa_chain(llm, chain_type="stuff")
+                    response = chain.run(input_documents=docs, question=prompt)
+                    
+                    st.markdown(response)
+                    st.session_state.messages.append({"role": "assistant", "content": response})
+                else:
+                    st.warning("Please upload a PDF and click 'Build Brain' first.")
+            
+            except Exception as e:
+                st.error(f"AI Error: {e}")
