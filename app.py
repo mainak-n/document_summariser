@@ -8,79 +8,70 @@ from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGener
 from langchain.chains import ConversationalRetrievalChain
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Gemma 3 Server Brain", layout="wide")
+st.set_page_config(page_title="Gemma 3 PDF Portal", layout="wide")
 st.title("🧠 Persistent PDF Brain (Gemma 3)")
 
-# API Key Retrieval
 if "GOOGLE_API_KEY" in st.secrets:
     API_KEY = st.secrets["GOOGLE_API_KEY"]
 else:
     API_KEY = st.sidebar.text_input("Google API Key", type="password")
 
 # --- 2. THE CORE BRAIN LOGIC ---
-def build_brain_if_missing():
-    """Checks for existing index or builds it from the 'data' folder in small batches."""
-    if not os.path.exists("faiss_index"):
-        st.info("🧠 Brain not found! Creating it now...")
-        try:
-            # Create data folder if missing
-            if not os.path.exists("data"):
-                os.makedirs("data") 
-                st.warning("⚠️ No 'data' folder found. Created empty one. Please add PDFs to it.")
-                return
+def build_brain():
+    """Builds the brain from scratch using files in the 'data' folder."""
+    if not os.path.exists("data") or not os.listdir("data"):
+        st.warning("📁 No PDFs found in the server's data folder.")
+        return
 
-            # Load PDFs
-            loader = DirectoryLoader("data", glob="*.pdf", loader_cls=PyPDFLoader)
-            documents = loader.load()
-            
-            if not documents:
-                st.warning("⚠️ No PDFs found in 'data' folder. Brain creation skipped.")
-                return
+    try:
+        st.info("Creating Brain from server files...")
+        loader = DirectoryLoader("data", glob="*.pdf", loader_cls=PyPDFLoader)
+        documents = loader.load()
+        
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        text_chunks = text_splitter.split_documents(documents)
+        
+        embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", google_api_key=API_KEY)
+        
+        # Stability Patch: Tiny batches to avoid 504 Deadline Exceeded
+        batch_size = 2
+        vector_store = FAISS.from_documents(text_chunks[:batch_size], embeddings)
+        
+        for i in range(batch_size, len(text_chunks), batch_size):
+            vector_store.add_documents(text_chunks[i : i + batch_size])
+            time.sleep(1.5) 
 
-            # Split text
-            text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-            text_chunks = text_splitter.split_documents(documents)
-            
-            # Initialize Embeddings
-            embeddings = GoogleGenerativeAIEmbeddings(
-                model="models/text-embedding-004", 
-                google_api_key=API_KEY
-            )
-            
-            # --- STABILITY PATCH: BATCH PROCESSING ---
-            # Instead of sending all at once (causes 504), we send 2 at a time.
-            batch_size = 2
-            progress_bar = st.progress(0, text="Initializing Brain connection...")
-            
-            # Start the vector store with the first batch
-            vector_store = FAISS.from_documents(text_chunks[:batch_size], embeddings)
-            time.sleep(1.5) # Give the API a moment
-            
-            # Add remaining chunks in small batches
-            total_chunks = len(text_chunks)
-            for i in range(batch_size, total_chunks, batch_size):
-                batch = text_chunks[i : i + batch_size]
-                vector_store.add_documents(batch)
-                
-                # Update UI
-                progress = min(i / total_chunks, 1.0)
-                progress_bar.progress(progress, text=f"Processing chunk {i}/{total_chunks}...")
-                time.sleep(1.2) # Small pause to prevent server timeout
+        vector_store.save_local("faiss_index")
+        st.success("🎉 Brain updated successfully!")
+    except Exception as e:
+        st.error(f"❌ Failed to build brain: {e}")
 
-            # Save locally for persistence
-            vector_store.save_local("faiss_index")
-            progress_bar.empty()
-            st.success("🎉 Brain created successfully on the server!")
-            
-        except Exception as e:
-            st.error(f"❌ Failed to build brain: {e}")
+# --- 3. SIDEBAR UPLOAD PORTAL ---
+with st.sidebar:
+    st.header("Upload Portal")
+    uploaded_file = st.file_uploader("Add new PDF to Brain", type="pdf")
+    
+    if uploaded_file and API_KEY:
+        if not os.path.exists("data"):
+            os.makedirs("data")
+        
+        # Save the uploaded file to the 'data' folder
+        file_path = os.path.join("data", uploaded_file.name)
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        
+        st.success(f"Saved {uploaded_file.name} to server.")
+        
+        # Trigger brain rebuild
+        if st.button("Update AI Brain"):
+            build_brain()
+            st.rerun()
 
-# --- 3. UI & CHAT LOGIC ---
+    if st.button("Force Rebuild Brain"):
+        build_brain()
+
+# --- 4. CHAT LOGIC ---
 if API_KEY:
-    # Build brain if it doesn't exist on disk
-    build_brain_if_missing()
-
-    # Chat Interface
     if "messages" not in st.session_state:
         st.session_state.messages = []
     if "chat_history" not in st.session_state:
@@ -90,7 +81,7 @@ if API_KEY:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    if prompt := st.chat_input("Ask about your server documents..."):
+    if prompt := st.chat_input("Ask about your PDF collection..."):
         if os.path.exists("faiss_index"):
             st.session_state.messages.append({"role": "user", "content": prompt})
             with st.chat_message("user"):
@@ -98,36 +89,19 @@ if API_KEY:
 
             with st.chat_message("assistant"):
                 try:
-                    # Load the brain
                     embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", google_api_key=API_KEY)
                     vector_store = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
                     
-                    # Gemma 3 Setup
-                    llm = ChatGoogleGenerativeAI(
-                        model="gemma-3-27b-it", 
-                        google_api_key=API_KEY, 
-                        temperature=0.3,
-                        timeout=120
-                    )
+                    llm = ChatGoogleGenerativeAI(model="gemma-3-27b-it", google_api_key=API_KEY, timeout=120)
+                    qa_chain = ConversationalRetrievalChain.from_llm(llm=llm, retriever=vector_store.as_retriever())
                     
-                    qa_chain = ConversationalRetrievalChain.from_llm(
-                        llm=llm,
-                        retriever=vector_store.as_retriever(),
-                    )
-                    
-                    response = qa_chain.invoke({
-                        "question": prompt, 
-                        "chat_history": st.session_state.chat_history
-                    })
-                    
+                    response = qa_chain.invoke({"question": prompt, "chat_history": st.session_state.chat_history})
                     answer = response['answer']
+                    
                     st.session_state.chat_history.append((prompt, answer))
                     st.markdown(answer)
                     st.session_state.messages.append({"role": "assistant", "content": answer})
-                    
                 except Exception as e:
                     st.error(f"Chat Error: {e}")
         else:
-            st.error("Vector index not found. Please add PDFs to the 'data' folder and restart.")
-else:
-    st.warning("Please enter your Google API Key to activate the brain.")
+            st.error("AI Brain not yet created. Upload a PDF and click 'Update AI Brain'.")
