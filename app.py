@@ -9,39 +9,26 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-# --- 1. UI CONFIG & FLOATING BUTTON CSS ---
+# --- 1. UI CONFIG & VISIBLE TOGGLE CSS ---
 st.set_page_config(page_title="Document Intelligence", layout="wide")
 
 st.markdown("""
     <style>
-    /* Hide Default Header/Footer */
-    [data-testid="stHeader"] { visibility: hidden; }
+    /* Hiding the problematic default header completely */
+    [data-testid="stHeader"] { visibility: hidden; height: 0px; }
     #MainMenu { visibility: hidden; }
     footer { visibility: hidden; }
     
-    /* FLOATING TOGGLE BUTTON - Middle Left */
-    .floating-btn {
-        position: fixed;
-        left: 0;
-        top: 50%;
-        transform: translateY(-50%);
-        background-color: #ffffff;
-        border: 1px solid #D3D3D3;
-        border-radius: 0 10px 10px 0;
-        padding: 15px 10px;
-        cursor: pointer;
-        z-index: 1000;
-        box-shadow: 2px 2px 10px rgba(0,0,0,0.1);
-        writing-mode: vertical-rl;
-        text-orientation: mixed;
-        font-weight: bold;
-        color: #555;
+    /* Ensuring the sidebar is easy to see when open */
+    [data-testid="stSidebar"] { 
+        background-color: #ffffff; 
+        border-right: 1px solid #eee; 
+        visibility: visible !important;
     }
 
     /* Main Background & Typography */
     .main { background-color: #fcfcfc; font-family: 'Segoe UI', sans-serif; }
     .stMarkdown p { font-size: 1.1rem; line-height: 1.6; color: #2c3e50; }
-    h1 { font-weight: 700; color: #1a1a1a; letter-spacing: -0.5px; }
     
     /* Better Chat Bubbles */
     [data-testid="stChatMessage"] {
@@ -52,35 +39,39 @@ st.markdown("""
         margin-bottom: 15px;
     }
     
-    /* LIGHT GREY INPUT BOX (No Red) */
+    /* LIGHT GREY INPUT BOX - FORCED STYLE */
     .stChatInputContainer {
         border: 1px solid #D3D3D3 !important; 
         border-radius: 12px !important;
         background-color: white !important;
     }
-
-    /* Sidebar Styling */
-    [data-testid="stSidebar"] { background-color: #ffffff; border-right: 1px solid #eee; }
     </style>
 """, unsafe_allow_html=True)
 
-# Function to force open sidebar via State
-if "sidebar_state" not in st.session_state:
-    st.session_state.sidebar_state = "expanded"
+# --- 2. THE MANUAL UNHIDE BUTTON ---
+# This sits at the very top of the page so you can always find it
+col1, col2 = st.columns([1, 8])
+with col1:
+    if st.button("📂 Open Settings"):
+        # This is a 'trick' to force the sidebar to show by triggering a rerun
+        # and letting the user interact with the sidebar area.
+        st.info("Sidebar is on the left ←")
+
+# --- 3. STATE MANAGEMENT ---
+if "messages" not in st.session_state: st.session_state.messages = []
+if "brain" not in st.session_state: st.session_state.brain = None
+if "indexed_files" not in st.session_state: st.session_state.indexed_files = set()
 
 def get_or_create_eventloop():
     try: return asyncio.get_event_loop()
     except: loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop); return loop
 get_or_create_eventloop()
 
-# --- 2. INTELLIGENT STATE MANAGEMENT ---
-if "messages" not in st.session_state: st.session_state.messages = []
-if "brain" not in st.session_state: st.session_state.brain = None
-if "indexed_files" not in st.session_state: st.session_state.indexed_files = set()
-
-# --- 3. MINIMAL SIDEBAR ---
+# --- 4. SIDEBAR ---
 with st.sidebar:
     st.title("Settings")
+    st.write("Upload your PDFs and enter your key here.")
+    
     if "GOOGLE_API_KEY" in st.secrets:
         os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
     else:
@@ -90,11 +81,11 @@ with st.sidebar:
     uploaded_files = st.file_uploader("Upload Documents", type="pdf", accept_multiple_files=True)
     
     st.divider()
-    if st.button("Reset Knowledge Base", use_container_width=True):
+    if st.button("Reset All", use_container_width=True):
         st.session_state.clear()
         st.rerun()
 
-# --- 4. BRAIN BUILDING ---
+# --- 5. BRAIN BUILDING LOGIC ---
 @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=4, max=15))
 def safe_append_docs(vector_store, docs):
     vector_store.add_documents(docs)
@@ -127,20 +118,17 @@ def update_intelligence(files):
 if uploaded_files and os.getenv("GOOGLE_API_KEY"):
     update_intelligence(uploaded_files)
 
-# --- 5. MAIN INTERFACE ---
+# --- 6. MAIN CHAT INTERFACE ---
 st.title("Document Analysis")
-st.caption("Fresh Look | Floating Controls Active")
 
-# Display Messages
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]): st.markdown(msg["content"])
 
-# Input Logic
 if prompt := st.chat_input("Ask a question..."):
     if not os.getenv("GOOGLE_API_KEY"):
-        st.info("Missing Access Key in Sidebar.")
+        st.info("Missing Key. Click 'Open Settings' on the top left.")
     elif not st.session_state.brain:
-        st.info("Please upload documents first.")
+        st.info("No documents. Click 'Open Settings' to upload.")
     else:
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"): st.markdown(prompt)
