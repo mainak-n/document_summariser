@@ -22,7 +22,7 @@ st.markdown("""
     /* Clean Main Background */
     .main { background-color: #ffffff; font-family: 'Segoe UI', sans-serif; }
     
-    /* FLAT CHAT BUBBLES: No shadows, light divider */
+    /* FLAT CHAT BUBBLES */
     [data-testid="stChatMessage"] {
         background-color: transparent;
         border: none !important;
@@ -36,8 +36,15 @@ st.markdown("""
         border-bottom: 1px solid #f0f2f6;
     }
     
-    /* Typography */
-    .stMarkdown p { font-size: 1.1rem; line-height: 1.6; color: #1e293b; }
+    /* FONT CONSISTENCY: Force same font even for bold/code outputs */
+    .stMarkdown, .stMarkdown p, .stMarkdown span, code, pre {
+        font-size: 1.1rem !important; 
+        line-height: 1.6 !important; 
+        color: #1e293b !important;
+        font-family: 'Segoe UI', sans-serif !important;
+        font-weight: normal !important;
+    }
+    
     h1 { font-weight: 800; color: #0f172a; letter-spacing: -1px; }
     
     /* LIGHT GREY INPUT BOX */
@@ -47,7 +54,6 @@ st.markdown("""
         background-color: #ffffff !important;
     }
 
-    /* Sidebar Styling */
     [data-testid="stSidebar"] { background-color: #f8fafc; border-right: 1px solid #f1f5f9; }
     </style>
 """, unsafe_allow_html=True)
@@ -78,7 +84,7 @@ with st.sidebar:
         st.session_state.clear()
         st.rerun()
 
-# --- 4. BRAIN BUILDING (RAG VECTOR DB) ---
+# --- 4. BRAIN BUILDING ---
 @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=4, max=15))
 def safe_append_docs(vector_store, docs):
     vector_store.add_documents(docs)
@@ -133,13 +139,13 @@ if prompt := st.chat_input("Ask a question about your documents..."):
         with st.chat_message("user"): st.markdown(prompt)
 
         with st.chat_message("assistant"):
-            final_answer = ""
-            # Status: Thinking.......
+            # Placeholder prevents the double-highlight/blurred ghosting effect
+            response_placeholder = st.empty()
+            
             with st.status("Thinking.......", expanded=False) as status:
                 try:
                     llm = ChatGoogleGenerativeAI(model="gemma-3-27b-it", transport="rest")
                     
-                    # Context Retrieval
                     docs = st.session_state.brain.similarity_search(prompt, k=5)
                     context = ""
                     for d in docs:
@@ -147,7 +153,7 @@ if prompt := st.chat_input("Ask a question about your documents..."):
                     
                     full_prompt = (
                         f"Provide a professional answer using the context below. "
-                        f"List sources at the end.\n\n"
+                        f"List sources at the end. Do not use markdown styling like bolding.\n\n"
                         f"Context:\n{context}\n\n"
                         f"Question: {prompt}"
                     )
@@ -156,11 +162,10 @@ if prompt := st.chat_input("Ask a question about your documents..."):
                     final_answer = response.content
                     status.update(label="Complete", state="complete")
                     
+                    # Update placeholder and session state
+                    response_placeholder.markdown(final_answer)
+                    st.session_state.messages.append({"role": "assistant", "content": final_answer})
+                    
                 except Exception as e:
                     status.update(label="Error", state="error")
                     st.error(f"Analysis failed: {e}")
-
-            # Display response OUTSIDE of status to ensure it stays visible
-            if final_answer:
-                st.markdown(final_answer)
-                st.session_state.messages.append({"role": "assistant", "content": final_answer})
