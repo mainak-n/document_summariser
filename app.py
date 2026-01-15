@@ -28,15 +28,22 @@ st.markdown("""
         background-color: #ffffff;
         border-radius: 12px;
         box-shadow: 0 2px 10px rgba(0,0,0,0.05);
-        border: 1px solid #555555;
+        border: 1px solid #f0f0f0;
         margin-bottom: 15px;
         padding: 20px;
     }
     
     /* Typography */
-    .stMarkdown p { font-size: 1.1rem; line-height: 1.6; color: #2c3e50; }
+    .stMarkdown p { font-size: 1.15rem; line-height: 1.7; color: #2c3e50; }
     h1 { font-weight: 700; color: #1a1a1a; letter-spacing: -0.5px; }
     
+    /* LIGHT GREY Chat Input Border - UPDATED COLOR */
+    .stChatInputContainer {
+        border: 1px solid #D3D3D3 !important; 
+        border-radius: 12px;
+        background-color: white !important;
+    }
+
     /* Sidebar Styling */
     [data-testid="stSidebar"] { background-color: #ffffff; border-right: 1px solid #eee; }
     </style>
@@ -101,7 +108,6 @@ def update_intelligence(files):
             remaining = all_new_docs
 
         if remaining:
-            # Batching to avoid 504 Deadline Exceeded
             for i in range(0, len(remaining), 5):
                 safe_append_docs(st.session_state.brain, remaining[i:i+5])
                 time.sleep(0.3)
@@ -120,18 +126,18 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
+# --- THE INPUT BOX (Line 105) ---
 if prompt := st.chat_input("Ask a question..."):
     if not os.getenv("GOOGLE_API_KEY"):
-        st.error("Missing API Key in Sidebar.")
+        st.info("Please enter your Access Key in the sidebar to begin.") # Removed Red
     elif not st.session_state.brain:
-        st.warning("Please upload documents first.")
+        st.info("Knowledge base empty. Please upload documents first.") # Removed Red
     else:
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"): st.markdown(prompt)
 
         with st.chat_message("assistant"):
             try:
-                # Use REST transport for stability on cloud platforms
                 llm = ChatGoogleGenerativeAI(model="gemma-3-27b-it", transport="rest")
                 
                 # Context Retrieval
@@ -152,10 +158,9 @@ if prompt := st.chat_input("Ask a question..."):
                 
                 response = llm.invoke(full_prompt)
                 
-                # Clean Output
                 final_answer = response.content
                 st.markdown(final_answer)
                 st.session_state.messages.append({"role": "assistant", "content": final_answer})
                 
             except Exception as e:
-                st.error(f"Analysis failed: {e}")
+                st.info(f"The system is busy or encountered an error: {e}") # Removed Red
