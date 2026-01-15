@@ -14,19 +14,10 @@ st.set_page_config(page_title="Document Intelligence", layout="wide", initial_si
 
 st.markdown("""
     <style>
-    /* Hide Streamlit Branding & Footer */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    
-    /* ALWAYS SHOW SIDEBAR: Remove Hide Button */
-    [data-testid="sidebar-close"] {
-        display: none !important;
-    }
-    
-    /* Main Background & Fonts */
+    [data-testid="sidebar-close"] { display: none !important; }
     .main { background-color: #fcfcfc; font-family: 'Segoe UI', sans-serif; }
-    
-    /* Chat Bubbles */
     [data-testid="stChatMessage"] {
         background-color: #ffffff;
         border-radius: 12px;
@@ -35,18 +26,9 @@ st.markdown("""
         margin-bottom: 15px;
         padding: 20px;
     }
-    
-    /* Typography */
     .stMarkdown p { font-size: 1.1rem; line-height: 1.6; color: #2c3e50; }
     h1 { font-weight: 700; color: #1a1a1a; letter-spacing: -0.5px; }
-    
-    /* LIGHT GREY CHAT INPUT BOX */
-    .stChatInputContainer {
-        border: 1px solid #D3D3D3 !important; 
-        border-radius: 12px !important;
-    }
-
-    /* Sidebar Styling */
+    .stChatInputContainer { border: 1px solid #D3D3D3 !important; border-radius: 12px !important; }
     [data-testid="stSidebar"] { background-color: #ffffff; border-right: 1px solid #eee; }
     </style>
 """, unsafe_allow_html=True)
@@ -64,21 +46,20 @@ if "indexed_files" not in st.session_state: st.session_state.indexed_files = set
 # --- 3. SIDEBAR ---
 with st.sidebar:
     st.title("Settings")
-    
     if "GOOGLE_API_KEY" in st.secrets:
         os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
     else:
         user_key = st.text_input("Enter Access Key", type="password")
         if user_key: os.environ["GOOGLE_API_KEY"] = user_key
 
-    uploaded_files = st.file_uploader("Upload Documents", type="pdf", accept_multiple_files=True)
+    uploaded_files = st.file_uploader("Upload Documents (Min. 6 pages)", type="pdf", accept_multiple_files=True)
     
     st.divider()
     if st.button("Reset Knowledge Base", use_container_width=True):
         st.session_state.clear()
         st.rerun()
 
-# --- 4. BRAIN BUILDING (RAG VECTOR DB) ---
+# --- 4. BRAIN BUILDING WITH PAGE CHECK ---
 @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=4, max=15))
 def safe_append_docs(vector_store, docs):
     vector_store.add_documents(docs)
@@ -87,82 +68,70 @@ def update_intelligence(files):
     new_files = [f for f in files if f.name not in st.session_state.indexed_files]
     if not new_files: return
 
-    # Updated Status: Creating Vector Database
-    with st.status("Reading Documents & Creating Vector Database...", expanded=False) as status:
-        all_new_docs = []
-        for f in new_files:
-            reader = PdfReader(f)
+    for f in new_files:
+        reader = PdfReader(f)
+        page_count = len(reader.pages)
+        
+        # --- THE 5-PAGE CHECK ---
+        if page_count <= 5:
+            st.sidebar.warning(f"⚠️ '{f.name}' skipped (only {page_count} pages). Minimum 6 pages required.")
+            st.session_state.indexed_files.add(f.name) # Add to seen so it doesn't keep warning
+            continue
+
+        with st.status(f"Analyzing {f.name} & Creating Vector Database...", expanded=False) as status:
             text = "".join([p.extract_text() or "" for p in reader.pages])
-            
             splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
             chunks = splitter.split_text(text)
-            for chunk in chunks:
-                all_new_docs.append(Document(page_content=chunk, metadata={"source": f.name}))
+            
+            docs_to_add = [Document(page_content=chunk, metadata={"source": f.name}) for chunk in chunks]
+            
+            embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", transport="rest")
+            
+            if st.session_state.brain is None:
+                st.session_state.brain = FAISS.from_documents([docs_to_add[0]], embeddings)
+                remaining = docs_to_add[1:]
+            else:
+                remaining = docs_to_add
+
+            if remaining:
+                for i in range(0, len(remaining), 5):
+                    safe_append_docs(st.session_state.brain, remaining[i:i+5])
+                    time.sleep(0.3)
             
             st.session_state.indexed_files.add(f.name)
-
-        embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", transport="rest")
-        
-        if st.session_state.brain is None:
-            st.session_state.brain = FAISS.from_documents([all_new_docs[0]], embeddings)
-            remaining = all_new_docs[1:]
-        else:
-            remaining = all_new_docs
-
-        if remaining:
-            for i in range(0, len(remaining), 5):
-                safe_append_docs(st.session_state.brain, remaining[i:i+5])
-                time.sleep(0.3)
-        
-        status.update(label="Vector Database Ready", state="complete")
+            status.update(label=f"Vector Database Ready: {f.name}", state="complete")
 
 if uploaded_files and os.getenv("GOOGLE_API_KEY"):
     update_intelligence(uploaded_files)
 
 # --- 5. MAIN INTERFACE ---
 st.title("Document Analysis")
-st.markdown("Query your uploaded documents using natural language.")
+st.markdown("Query documents with more than 5 pages.")
 
-# Display Chat History
 for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+    with st.chat_message(msg["role"]): st.markdown(msg["content"])
 
 if prompt := st.chat_input("Ask a question..."):
     if not os.getenv("GOOGLE_API_KEY"):
-        st.error("Missing API Key in Sidebar.")
+        st.info("Missing Access Key in Sidebar.")
     elif not st.session_state.brain:
-        st.warning("Please upload documents first.")
+        st.info("No valid documents (6+ pages) found in the knowledge base.")
     else:
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"): st.markdown(prompt)
 
         with st.chat_message("assistant"):
-            # Added Status: Thinking.......
             with st.status("Thinking.......", expanded=False) as status:
                 try:
                     llm = ChatGoogleGenerativeAI(model="gemma-3-27b-it", transport="rest")
-                    
-                    # Context Retrieval
                     docs = st.session_state.brain.similarity_search(prompt, k=5)
-                    context = ""
-                    for d in docs:
-                        context += f"\n[{d.metadata['source']}]: {d.page_content}\n"
+                    context = "".join([f"\n[{d.metadata['source']}]: {d.page_content}\n" for d in docs])
                     
-                    full_prompt = (
-                        f"Use the context below to provide a professional answer. "
-                        f"At the end, list sources used.\n\n"
-                        f"Context:\n{context}\n\n"
-                        f"User Question: {prompt}"
-                    )
-                    
-                    response = llm.invoke(full_prompt)
-                    final_answer = response.content
+                    response = llm.invoke(f"Context:\n{context}\n\nQuestion: {prompt}")
                     status.update(label="Response Generated", state="complete")
                     
-                    st.markdown(final_answer)
-                    st.session_state.messages.append({"role": "assistant", "content": final_answer})
-                    
+                    st.markdown(response.content)
+                    st.session_state.messages.append({"role": "assistant", "content": response.content})
                 except Exception as e:
                     status.update(label="Error", state="error")
                     st.error(f"Analysis failed: {e}")
