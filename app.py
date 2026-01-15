@@ -9,61 +9,48 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-# --- 1. CLEAN UI & RED-KILLER STYLING ---
+# --- 1. UI CONFIGURATION ---
 st.set_page_config(page_title="Document Intelligence", layout="wide")
 
+# Balanced CSS: Clean, High Readability, No Red.
 st.markdown("""
     <style>
-    /* Hide Streamlit elements */
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
+    /* Main Content Styling */
+    .main { background-color: #f9f9fb; }
     
-    /* Main Background */
-    .main { background-color: #fcfcfc; font-family: 'Segoe UI', sans-serif; }
-    
-    /* THE RED KILLER: Complete Chat Input Neutralization */
-    /* Target the container, the focus state, and the internal BaseWeb container */
-    .stChatInputContainer, 
-    .stChatInputContainer:focus-within, 
-    .stChatInputContainer:hover,
-    div[data-baseweb="base-input"],
-    div[data-baseweb="input"] {
-        border: 1px solid #D3D3D3 !important; 
-        border-radius: 12px !important;
-        background-color: white !important;
-        box-shadow: none !important;
-    }
-
-    /* Kill the specific focus ring inside the text area */
-    textarea {
-        border: none !important;
-        box-shadow: none !important;
-        outline: none !important;
-    }
-
-    /* Better Chat Bubbles */
+    /* Clean Chat Bubbles */
     [data-testid="stChatMessage"] {
         background-color: #ffffff;
-        border-radius: 12px;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.05);
-        border: 1px solid #f0f0f0;
-        margin-bottom: 15px;
-        padding: 20px;
+        border-radius: 8px;
+        border: 1px solid #eaeaea;
+        padding: 15px;
+        margin-bottom: 10px;
     }
-    
-    /* Typography - Optimized for Reading */
-    .stMarkdown p { font-size: 1.15rem; line-height: 1.7; color: #2c3e50; }
-    h1 { font-weight: 700; color: #1a1a1a; letter-spacing: -0.5px; }
-    
-    /* Sidebar */
-    [data-testid="stSidebar"] { background-color: #ffffff; border-right: 1px solid #eee; }
+
+    /* THE INPUT BOX: Light Grey & Simple */
+    .stChatInputContainer {
+        border: 1px solid #d1d1d1 !important;
+        border-radius: 10px !important;
+    }
+
+    /* Text Readability */
+    .stMarkdown p {
+        font-size: 1.1rem;
+        line-height: 1.6;
+        color: #333333;
+    }
+
+    /* Hide unnecessary Streamlit bits */
+    #MainMenu, footer, header { visibility: hidden; }
     </style>
 """, unsafe_allow_html=True)
 
 def get_or_create_eventloop():
-    try: return asyncio.get_event_loop()
-    except: loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop); return loop
+    try: return asyncio.get_loop()
+    except:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop
 get_or_create_eventloop()
 
 # --- 2. STATE MANAGEMENT ---
@@ -73,87 +60,88 @@ if "indexed_files" not in st.session_state: st.session_state.indexed_files = set
 
 # --- 3. SIDEBAR ---
 with st.sidebar:
-    st.title("Settings")
+    st.title("Control Center")
     if "GOOGLE_API_KEY" in st.secrets:
         os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
     else:
-        user_key = st.text_input("Enter Access Key", type="password")
+        user_key = st.text_input("Access Key", type="password")
         if user_key: os.environ["GOOGLE_API_KEY"] = user_key
 
-    uploaded_files = st.file_uploader("Upload Documents", type="pdf", accept_multiple_files=True)
+    uploaded_files = st.file_uploader("Upload PDFs", type="pdf", accept_multiple_files=True)
     
-    st.divider()
-    if st.button("Reset Knowledge Base", use_container_width=True):
+    if st.button("Clear All Data", use_container_width=True):
         st.session_state.clear()
         st.rerun()
 
-# --- 4. OPTIMIZED BRAIN BUILDING ---
-@retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=4, max=15))
-def safe_append_docs(vector_store, docs):
+# --- 4. DATA PROCESSING ---
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+def safe_append(vector_store, docs):
     vector_store.add_documents(docs)
 
-def update_intelligence(files):
+def process_docs(files):
     new_files = [f for f in files if f.name not in st.session_state.indexed_files]
     if not new_files: return
-    with st.status("Analyzing Documents...", expanded=False) as status:
+
+    with st.spinner("Updating Knowledge Base..."):
         all_new_docs = []
         for f in new_files:
             reader = PdfReader(f)
             text = "".join([p.extract_text() or "" for p in reader.pages])
-            splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
+            splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
             chunks = splitter.split_text(text)
             for chunk in chunks:
                 all_new_docs.append(Document(page_content=chunk, metadata={"source": f.name}))
             st.session_state.indexed_files.add(f.name)
-        
-        embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", transport="rest")
+
+        embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
         
         if st.session_state.brain is None:
             st.session_state.brain = FAISS.from_documents([all_new_docs[0]], embeddings)
             remaining = all_new_docs[1:]
         else:
             remaining = all_new_docs
-            
+
         if remaining:
-            for i in range(0, len(remaining), 5):
-                safe_append_docs(st.session_state.brain, remaining[i:i+5])
-                time.sleep(0.3)
-        status.update(label="Knowledge Base Updated", state="complete")
+            # Batching prevents the app from hanging
+            for i in range(0, len(remaining), 10):
+                safe_append(st.session_state.brain, remaining[i:i+10])
+                time.sleep(0.1)
 
 if uploaded_files and os.getenv("GOOGLE_API_KEY"):
-    update_intelligence(uploaded_files)
+    process_docs(uploaded_files)
 
-# --- 5. MAIN INTERFACE ---
+# --- 5. CHAT ---
 st.title("Document Analysis")
-st.caption("Fresh UI | High-Readability Mode")
 
 for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]): st.markdown(msg["content"])
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
 
-if prompt := st.chat_input("Ask a question..."):
+if prompt := st.chat_input("Type your question here..."):
     if not os.getenv("GOOGLE_API_KEY"):
-        st.info("Missing Access Key. Check Sidebar.")
+        st.info("Please provide an API key in the sidebar.")
     elif not st.session_state.brain:
-        st.info("No documents found. Please upload PDFs.")
+        st.info("Please upload documents to begin.")
     else:
         st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"): st.markdown(prompt)
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
         with st.chat_message("assistant"):
             try:
-                # Use Gemini 3 for analysis via REST
-                llm = ChatGoogleGenerativeAI(model="gemma-3-27b-it", transport="rest")
-                docs = st.session_state.brain.similarity_search(prompt, k=5)
+                llm = ChatGoogleGenerativeAI(model="gemma-3-27b-it")
+                
+                # Context Retrieval
+                docs = st.session_state.brain.similarity_search(prompt, k=4)
                 context = ""
                 sources = set()
                 for d in docs:
-                    context += f"\n[{d.metadata['source']}]: {d.page_content}\n"
+                    context += f"\n[File: {d.metadata['source']}]: {d.page_content}\n"
                     sources.add(d.metadata['source'])
                 
-                full_prompt = f"Answer clearly based on this context. Mention the source file name.\n\nContext:\n{context}\n\nQuestion: {prompt}"
-                response = llm.invoke(full_prompt)
+                response = llm.invoke(f"Context:\n{context}\n\nQuestion: {prompt}\n\nAnswer precisely and mention the file name.")
                 
-                final_answer = response.content
-                st.markdown(final_answer)
-                st.session_state.messages.append({"role": "assistant", "content": final_answer})
+                st.markdown(response.content)
+                st.session_state.messages.append({"role": "assistant", "content": response.content})
             except Exception as e:
-                st.info(f"System Note: {e}")
+                st.info(f"Notice: {e}")
