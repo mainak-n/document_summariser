@@ -132,7 +132,7 @@ if prompt := st.chat_input("Ask a question..."):
         with st.chat_message("assistant"):
             try:
                 # Use REST transport for stability on cloud platforms
-                llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", transport="rest")
+                llm = ChatGoogleGenerativeAI(model="gemma-3-27b-it", transport="rest")
                 
                 # Context Retrieval
                 docs = st.session_state.brain.similarity_search(prompt, k=5)
