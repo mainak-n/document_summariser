@@ -1,0 +1,9 @@
+streamlit>=1.30.0
+langchain==0.1.16
+langchain-community==0.0.32
+langchain-google-genai
+google-generativeai
+faiss-cpu
+pypdf
+tiktoken
+python-dotenv
