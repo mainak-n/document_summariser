@@ -75,4 +75,4 @@ if uploaded_file and api_key:
             except Exception as e:
                 st.error(f"AI Error: {e}")
 else:
-    st.info("Upload a PDF and enter your API Key.")
+    st.info("Upload a PDF.")
