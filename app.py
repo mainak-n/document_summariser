@@ -12,14 +12,13 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 # --- 1. CLEAN UI & PERMANENT SIDEBAR STYLING ---
 st.set_page_config(page_title="Document Intelligence", layout="wide", initial_sidebar_state="expanded")
 
-# CSS for a minimalist UI and forced sidebar
 st.markdown("""
     <style>
     /* Hide Streamlit Branding & Footer */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     
-    /* REMOVE SIDEBAR HIDE BUTTON (Always Show Sidebar) */
+    /* ALWAYS SHOW SIDEBAR: Remove Hide Button */
     [data-testid="sidebar-close"] {
         display: none !important;
     }
@@ -27,7 +26,7 @@ st.markdown("""
     /* Main Background & Fonts */
     .main { background-color: #fcfcfc; font-family: 'Segoe UI', sans-serif; }
     
-    /* Better Chat Bubbles */
+    /* Chat Bubbles */
     [data-testid="stChatMessage"] {
         background-color: #ffffff;
         border-radius: 12px;
@@ -57,16 +56,15 @@ def get_or_create_eventloop():
     except: loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop); return loop
 get_or_create_eventloop()
 
-# --- 2. INTELLIGENT STATE MANAGEMENT ---
+# --- 2. STATE MANAGEMENT ---
 if "messages" not in st.session_state: st.session_state.messages = []
 if "brain" not in st.session_state: st.session_state.brain = None
 if "indexed_files" not in st.session_state: st.session_state.indexed_files = set()
 
-# --- 3. MINIMAL SIDEBAR (ALWAYS VISIBLE) ---
+# --- 3. SIDEBAR ---
 with st.sidebar:
     st.title("Settings")
     
-    # Secret Key Handling
     if "GOOGLE_API_KEY" in st.secrets:
         os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
     else:
@@ -80,7 +78,7 @@ with st.sidebar:
         st.session_state.clear()
         st.rerun()
 
-# --- 4. OPTIMIZED BRAIN BUILDING ---
+# --- 4. BRAIN BUILDING (RAG VECTOR DB) ---
 @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=4, max=15))
 def safe_append_docs(vector_store, docs):
     vector_store.add_documents(docs)
@@ -89,7 +87,8 @@ def update_intelligence(files):
     new_files = [f for f in files if f.name not in st.session_state.indexed_files]
     if not new_files: return
 
-    with st.status("Reading New Documents...", expanded=False) as status:
+    # Updated Status: Creating Vector Database
+    with st.status("Reading Documents & Creating Vector Database...", expanded=False) as status:
         all_new_docs = []
         for f in new_files:
             reader = PdfReader(f)
@@ -115,7 +114,7 @@ def update_intelligence(files):
                 safe_append_docs(st.session_state.brain, remaining[i:i+5])
                 time.sleep(0.3)
         
-        status.update(label="Knowledge Base Ready", state="complete")
+        status.update(label="Vector Database Ready", state="complete")
 
 if uploaded_files and os.getenv("GOOGLE_API_KEY"):
     update_intelligence(uploaded_files)
@@ -139,29 +138,31 @@ if prompt := st.chat_input("Ask a question..."):
         with st.chat_message("user"): st.markdown(prompt)
 
         with st.chat_message("assistant"):
-            try:
-                llm = ChatGoogleGenerativeAI(model="gemma-3-27b-it", transport="rest")
-                
-                # Context Retrieval
-                docs = st.session_state.brain.similarity_search(prompt, k=5)
-                context = ""
-                sources = set()
-                for d in docs:
-                    context += f"\n[{d.metadata['source']}]: {d.page_content}\n"
-                    sources.add(d.metadata['source'])
-                
-                full_prompt = (
-                    f"Use the context below to provide a professional, highly readable answer. "
-                    f"At the end of your response, list the sources you used.\n\n"
-                    f"Context:\n{context}\n\n"
-                    f"User Question: {prompt}"
-                )
-                
-                response = llm.invoke(full_prompt)
-                
-                final_answer = response.content
-                st.markdown(final_answer)
-                st.session_state.messages.append({"role": "assistant", "content": final_answer})
-                
-            except Exception as e:
-                st.error(f"Analysis failed: {e}")
+            # Added Status: Thinking.......
+            with st.status("Thinking.......", expanded=False) as status:
+                try:
+                    llm = ChatGoogleGenerativeAI(model="gemma-3-27b-it", transport="rest")
+                    
+                    # Context Retrieval
+                    docs = st.session_state.brain.similarity_search(prompt, k=5)
+                    context = ""
+                    for d in docs:
+                        context += f"\n[{d.metadata['source']}]: {d.page_content}\n"
+                    
+                    full_prompt = (
+                        f"Use the context below to provide a professional answer. "
+                        f"At the end, list sources used.\n\n"
+                        f"Context:\n{context}\n\n"
+                        f"User Question: {prompt}"
+                    )
+                    
+                    response = llm.invoke(full_prompt)
+                    final_answer = response.content
+                    status.update(label="Response Generated", state="complete")
+                    
+                    st.markdown(final_answer)
+                    st.session_state.messages.append({"role": "assistant", "content": final_answer})
+                    
+                except Exception as e:
+                    status.update(label="Error", state="error")
+                    st.error(f"Analysis failed: {e}")
