@@ -145,7 +145,7 @@ if prompt := st.chat_input("Ask a question about your PDF..."):
             with st.spinner("Thinking..."):
                 # Added timeout to prevent hanging
                 llm = ChatGoogleGenerativeAI(
-                    model="gemini-pro", 
+                    model="gemma-3-27b-it", 
                     google_api_key=api_key, 
                     temperature=0.3,
                     timeout=60
