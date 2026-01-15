@@ -14,12 +14,35 @@ st.set_page_config(page_title="Document Intelligence", layout="wide")
 
 st.markdown("""
     <style>
+    /* Hide Streamlit elements */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
     
+    /* Main Background */
     .main { background-color: #fcfcfc; font-family: 'Segoe UI', sans-serif; }
     
+    /* THE RED KILLER: Complete Chat Input Neutralization */
+    /* Target the container, the focus state, and the internal BaseWeb container */
+    .stChatInputContainer, 
+    .stChatInputContainer:focus-within, 
+    .stChatInputContainer:hover,
+    div[data-baseweb="base-input"],
+    div[data-baseweb="input"] {
+        border: 1px solid #D3D3D3 !important; 
+        border-radius: 12px !important;
+        background-color: white !important;
+        box-shadow: none !important;
+    }
+
+    /* Kill the specific focus ring inside the text area */
+    textarea {
+        border: none !important;
+        box-shadow: none !important;
+        outline: none !important;
+    }
+
+    /* Better Chat Bubbles */
     [data-testid="stChatMessage"] {
         background-color: #ffffff;
         border-radius: 12px;
@@ -29,25 +52,11 @@ st.markdown("""
         padding: 20px;
     }
     
+    /* Typography - Optimized for Reading */
     .stMarkdown p { font-size: 1.15rem; line-height: 1.7; color: #2c3e50; }
     h1 { font-weight: 700; color: #1a1a1a; letter-spacing: -0.5px; }
     
-    /* THE RED KILLER: Force Light Grey even when active */
-    .stChatInputContainer {
-        border: 1px solid #D3D3D3 !important; 
-        border-radius: 12px;
-        background-color: white !important;
-    }
-    .stChatInputContainer:focus-within {
-        border: 1px solid #D3D3D3 !important;
-        box-shadow: 0 0 8px rgba(0,0,0,0.05) !important;
-    }
-    
-    /* Blocks the default red border on all input widgets */
-    div[data-baseweb="base-input"], div[data-baseweb="input"] {
-        border-color: #D3D3D3 !important;
-    }
-
+    /* Sidebar */
     [data-testid="stSidebar"] { background-color: #ffffff; border-right: 1px solid #eee; }
     </style>
 """, unsafe_allow_html=True)
@@ -78,7 +87,7 @@ with st.sidebar:
         st.session_state.clear()
         st.rerun()
 
-# --- 4. BRAIN BUILDING ---
+# --- 4. OPTIMIZED BRAIN BUILDING ---
 @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=4, max=15))
 def safe_append_docs(vector_store, docs):
     vector_store.add_documents(docs)
@@ -96,37 +105,42 @@ def update_intelligence(files):
             for chunk in chunks:
                 all_new_docs.append(Document(page_content=chunk, metadata={"source": f.name}))
             st.session_state.indexed_files.add(f.name)
+        
         embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", transport="rest")
+        
         if st.session_state.brain is None:
             st.session_state.brain = FAISS.from_documents([all_new_docs[0]], embeddings)
             remaining = all_new_docs[1:]
         else:
             remaining = all_new_docs
+            
         if remaining:
             for i in range(0, len(remaining), 5):
                 safe_append_docs(st.session_state.brain, remaining[i:i+5])
                 time.sleep(0.3)
-        status.update(label="Ready", state="complete")
+        status.update(label="Knowledge Base Updated", state="complete")
 
 if uploaded_files and os.getenv("GOOGLE_API_KEY"):
     update_intelligence(uploaded_files)
 
 # --- 5. MAIN INTERFACE ---
 st.title("Document Analysis")
+st.caption("Fresh UI | High-Readability Mode")
 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]): st.markdown(msg["content"])
 
 if prompt := st.chat_input("Ask a question..."):
     if not os.getenv("GOOGLE_API_KEY"):
-        st.info("Please enter your Access Key in the sidebar.")
+        st.info("Missing Access Key. Check Sidebar.")
     elif not st.session_state.brain:
-        st.info("Please upload documents first.")
+        st.info("No documents found. Please upload PDFs.")
     else:
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"): st.markdown(prompt)
         with st.chat_message("assistant"):
             try:
+                # Use Gemini 3 for analysis via REST
                 llm = ChatGoogleGenerativeAI(model="gemma-3-27b-it", transport="rest")
                 docs = st.session_state.brain.similarity_search(prompt, k=5)
                 context = ""
@@ -135,10 +149,11 @@ if prompt := st.chat_input("Ask a question..."):
                     context += f"\n[{d.metadata['source']}]: {d.page_content}\n"
                     sources.add(d.metadata['source'])
                 
-                full_prompt = f"Answer using this context. List sources at the end.\n\nContext:\n{context}\n\nQuestion: {prompt}"
+                full_prompt = f"Answer clearly based on this context. Mention the source file name.\n\nContext:\n{context}\n\nQuestion: {prompt}"
                 response = llm.invoke(full_prompt)
+                
                 final_answer = response.content
                 st.markdown(final_answer)
                 st.session_state.messages.append({"role": "assistant", "content": final_answer})
             except Exception as e:
-                st.info(f"System message: {e}")
+                st.info(f"System Note: {e}")
