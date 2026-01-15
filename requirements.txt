@@ -1,11 +1,7 @@
 streamlit
-langchain
-langchain-community
-langchain-google-genai
-google-generativeai
-faiss-cpu
-pypdf
-tiktoken
-python-dotenv
 PyPDF2
+langchain-google-genai
+langchain-community
+langchain-text-splitters
+faiss-cpu
 tenacity
