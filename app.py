@@ -14,79 +14,15 @@ st.set_page_config(page_title="Document Intelligence", layout="wide", initial_si
 
 st.markdown("""
     <style>
-    /* Global Styles */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     [data-testid="sidebar-close"] { display: none !important; }
-    
-    /* Background and clean edges */
     .stApp { background-color: #ffffff; }
-    
-    /* Sidebar: Soft Slate with borderless feel */
-    [data-testid="stSidebar"] {
-        background-color: #f9fafb;
-        border-right: 1px solid #f3f4f6;
-    }
-    
-    /* Typography: Modern Inter-style look */
-    h1 {
-        font-family: 'Inter', 'Segoe UI', sans-serif;
-        font-weight: 800;
-        color: #111827;
-        letter-spacing: -0.05em;
-        padding-bottom: 20px;
-    }
-    
-    .stMarkdown p, .stMarkdown span {
-        font-family: 'Inter', 'Segoe UI', sans-serif;
-        font-size: 1.05rem !important;
-        line-height: 1.7 !important;
-        color: #374151 !important;
-    }
-
-    /* Modern Chat UI: Flat and Spaced */
-    [data-testid="stChatMessage"] {
-        background-color: transparent !important;
-        border-bottom: 1px solid #f3f4f6 !important;
-        border-radius: 0px !important;
-        padding: 30px 10px !important;
-        margin-bottom: 0px !important;
-    }
-    
-    /* Avatar styling */
-    [data-testid="stChatMessageAvatarUser"] { background-color: #111827 !important; }
-    [data-testid="stChatMessageAvatarAssistant"] { background-color: #ecf0f1 !important; }
-
-    /* Aesthetic Status Indicator */
-    [data-testid="stStatusWidget"] {
-        border: 1px solid #e5e7eb !important;
-        border-radius: 100px !important;
-        background-color: #ffffff !important;
-        padding: 2px 12px !important;
-    }
-
-    /* Chat Input: Floating Minimalist Box */
-    .stChatInputContainer {
-        border: 1px solid #e5e7eb !important;
-        border-radius: 12px !important;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05) !important;
-        background-color: #ffffff !important;
-        padding: 5px !important;
-    }
-
-    /* Buttons: Professional Slate */
-    .stButton>button {
-        border-radius: 8px !important;
-        border: 1px solid #e5e7eb !important;
-        color: #111827 !important;
-        background-color: #ffffff !important;
-        font-weight: 500 !important;
-        transition: all 0.2s ease;
-    }
-    .stButton>button:hover {
-        border-color: #111827 !important;
-        background-color: #f9fafb !important;
-    }
+    [data-testid="stSidebar"] { background-color: #f9fafb; border-right: 1px solid #f3f4f6; }
+    h1 { font-family: 'Inter', sans-serif; font-weight: 800; color: #111827; letter-spacing: -0.05em; }
+    .stMarkdown p, .stMarkdown span { font-family: 'Inter', sans-serif; font-size: 1.05rem !important; line-height: 1.7 !important; color: #374151 !important; }
+    [data-testid="stChatMessage"] { background-color: transparent !important; border-bottom: 1px solid #f3f4f6 !important; padding: 30px 10px !important; }
+    .stChatInputContainer { border: 1px solid #e5e7eb !important; border-radius: 12px !important; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05) !important; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -116,7 +52,7 @@ with st.sidebar:
         st.session_state.clear()
         st.rerun()
 
-# --- 4. ENGINE (RAG) ---
+# --- 4. ENGINE (RAG WITH PAGE METADATA) ---
 @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=4, max=15))
 def safe_append_docs(vector_store, docs):
     vector_store.add_documents(docs)
@@ -125,17 +61,26 @@ def update_intelligence(files):
     new_files = [f for f in files if f.name not in st.session_state.indexed_files]
     if not new_files: return
 
-    with st.status("Syncing library...", expanded=False) as status:
+    with st.status("Syncing library with page mapping...", expanded=False) as status:
         all_new_docs = []
+        splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+        
         for f in new_files:
             reader = PdfReader(f)
-            text = "".join([p.extract_text() or "" for p in reader.pages])
-            splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
-            chunks = splitter.split_text(text)
-            for chunk in chunks:
-                all_new_docs.append(Document(page_content=chunk, metadata={"source": f.name}))
+            # Process page by page to capture correct numbers
+            for i, page in enumerate(reader.pages):
+                page_text = page.extract_text() or ""
+                if page_text.strip():
+                    chunks = splitter.split_text(page_text)
+                    for chunk in chunks:
+                        all_new_docs.append(Document(
+                            page_content=chunk, 
+                            metadata={"source": f.name, "page": i + 1}
+                        ))
             st.session_state.indexed_files.add(f.name)
 
+        if not all_new_docs: return
+        
         embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", transport="rest")
         
         if st.session_state.brain is None:
@@ -145,9 +90,9 @@ def update_intelligence(files):
             remaining = all_new_docs
 
         if remaining:
-            for i in range(0, len(remaining), 5):
-                safe_append_docs(st.session_state.brain, remaining[i:i+5])
-                time.sleep(0.3)
+            for i in range(0, len(remaining), 10):
+                safe_append_docs(st.session_state.brain, remaining[i:i+10])
+                time.sleep(0.5)
         status.update(label="Library Synced", state="complete")
 
 if uploaded_files and os.getenv("GOOGLE_API_KEY"):
@@ -156,10 +101,8 @@ if uploaded_files and os.getenv("GOOGLE_API_KEY"):
 # --- 5. INTERFACE ---
 st.title("Document Analysis")
 
-# Display History
 for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+    with st.chat_message(msg["role"]): st.markdown(msg["content"])
 
 if prompt := st.chat_input("Inquire about your documents..."):
     if not os.getenv("GOOGLE_API_KEY"):
@@ -172,15 +115,21 @@ if prompt := st.chat_input("Inquire about your documents..."):
 
         with st.chat_message("assistant"):
             res_area = st.empty()
-            with st.status("Thinking...", expanded=False) as status:
+            with st.status("Searching context...", expanded=False) as status:
                 try:
-                    llm = ChatGoogleGenerativeAI(model="gemma-3-27b-it", transport="rest")
-                    docs = st.session_state.brain.similarity_search(prompt, k=5)
-                    context = "".join([f"\n[{d.metadata['source']}]: {d.page_content}\n" for d in docs])
+                    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", transport="rest")
+                    docs = st.session_state.brain.similarity_search(prompt, k=6)
+                    
+                    context = ""
+                    sources_found = []
+                    for d in docs:
+                        source_info = f"{d.metadata['source']} (Page {d.metadata['page']})"
+                        context += f"\n[{source_info}]: {d.page_content}\n"
+                        sources_found.append(source_info)
                     
                     full_prompt = (
-                        f"Provide a sophisticated, professional answer based on the context. "
-                        f"List citations at the end. Use plain text.\n\n"
+                        f"Provide a professional, plain-text answer using the context provided. "
+                        f"You must include page numbers in your citations.\n\n"
                         f"Context:\n{context}\n\n"
                         f"Query: {prompt}"
                     )
