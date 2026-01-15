@@ -17,7 +17,7 @@ def get_or_create_eventloop():
         return loop
 
 st.set_page_config(page_title="Gemma Hybrid Multi-PDF", layout="wide")
-st.title("📚 Multi-PDF Intelligence (Gemma 3)")
+st.title("PDF Summariser")
 get_or_create_eventloop()
 
 # --- 2. SIDEBAR CONFIG ---
