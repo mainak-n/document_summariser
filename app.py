@@ -1,107 +1,90 @@
 import streamlit as st
 import os
-import time
-from langchain_community.document_loaders import PyPDFLoader, DirectoryLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import FAISS
-from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
-from langchain.chains import ConversationalRetrievalChain
+from PyPDF2 import PdfReader
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain.schema import HumanMessage, SystemMessage
 
-# --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Gemma 3 PDF Portal", layout="wide")
-st.title("🧠 Persistent PDF Brain (Gemma 3)")
+# --- PAGE CONFIG ---
+st.set_page_config(page_title="Simple Gemma Chat", layout="wide")
+st.title("📄 Simple PDF Chat (Direct Context)")
 
+# --- API KEY ---
 if "GOOGLE_API_KEY" in st.secrets:
     API_KEY = st.secrets["GOOGLE_API_KEY"]
 else:
     API_KEY = st.sidebar.text_input("Google API Key", type="password")
 
-# --- 2. THE CORE BRAIN LOGIC ---
-def build_brain():
-    """Builds the brain from scratch using files in the 'data' folder."""
-    if not os.path.exists("data") or not os.listdir("data"):
-        st.warning("📁 No PDFs found in the server's data folder.")
-        return
+# --- PDF TEXT EXTRACTION ---
+def get_pdf_text(pdf_file):
+    text = ""
+    pdf_reader = PdfReader(pdf_file)
+    for page in pdf_reader.pages:
+        text += page.extract_text()
+    return text
 
-    try:
-        st.info("Creating Brain from server files...")
-        loader = DirectoryLoader("data", glob="*.pdf", loader_cls=PyPDFLoader)
-        documents = loader.load()
-        
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-        text_chunks = text_splitter.split_documents(documents)
-        
-        embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", google_api_key=API_KEY)
-        
-        # Stability Patch: Tiny batches to avoid 504 Deadline Exceeded
-        batch_size = 2
-        vector_store = FAISS.from_documents(text_chunks[:batch_size], embeddings)
-        
-        for i in range(batch_size, len(text_chunks), batch_size):
-            vector_store.add_documents(text_chunks[i : i + batch_size])
-            time.sleep(1.5) 
-
-        vector_store.save_local("faiss_index")
-        st.success("🎉 Brain updated successfully!")
-    except Exception as e:
-        st.error(f"❌ Failed to build brain: {e}")
-
-# --- 3. SIDEBAR UPLOAD PORTAL ---
+# --- SIDEBAR UPLOAD ---
 with st.sidebar:
     st.header("Upload Portal")
-    uploaded_file = st.file_uploader("Add new PDF to Brain", type="pdf")
+    uploaded_file = st.file_uploader("Upload your PDF", type="pdf")
     
-    if uploaded_file and API_KEY:
-        if not os.path.exists("data"):
-            os.makedirs("data")
-        
-        # Save the uploaded file to the 'data' folder
-        file_path = os.path.join("data", uploaded_file.name)
-        with open(file_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-        
-        st.success(f"Saved {uploaded_file.name} to server.")
-        
-        # Trigger brain rebuild
-        if st.button("Update AI Brain"):
-            build_brain()
-            st.rerun()
+    if st.button("Clear Chat"):
+        st.session_state.chat_messages = []
+        st.rerun()
 
-    if st.button("Force Rebuild Brain"):
-        build_brain()
+# --- SESSION STATE ---
+if "chat_messages" not in st.session_state:
+    st.session_state.chat_messages = []
 
-# --- 4. CHAT LOGIC ---
-if API_KEY:
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-    if "chat_history" not in st.session_state:
-        st.session_state.chat_history = []
+# --- CHAT LOGIC ---
+if uploaded_file and API_KEY:
+    # 1. Extract text once and keep it in memory
+    if "pdf_context" not in st.session_state:
+        with st.spinner("Reading PDF..."):
+            st.session_state.pdf_context = get_pdf_text(uploaded_file)
+            st.success("PDF Loaded!")
 
-    for msg in st.session_state.messages:
+    # 2. Display Chat History
+    for msg in st.session_state.chat_messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    if prompt := st.chat_input("Ask about your PDF collection..."):
-        if os.path.exists("faiss_index"):
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            with st.chat_message("user"):
-                st.markdown(prompt)
+    # 3. User Input
+    if prompt := st.chat_input("Ask a question about this PDF..."):
+        st.session_state.chat_messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
 
-            with st.chat_message("assistant"):
+        # 4. Get AI Response
+        with st.chat_message("assistant"):
+            with st.spinner("Gemma 3 is reading and answering..."):
                 try:
-                    embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", google_api_key=API_KEY)
-                    vector_store = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
+                    llm = ChatGoogleGenerativeAI(
+                        model="gemma-3-27b-it",
+                        google_api_key=API_KEY,
+                        temperature=0.3
+                    )
                     
-                    llm = ChatGoogleGenerativeAI(model="gemma-3-27b-it", google_api_key=API_KEY, timeout=120)
-                    qa_chain = ConversationalRetrievalChain.from_llm(llm=llm, retriever=vector_store.as_retriever())
+                    # Create the context-aware prompt
+                    full_prompt = f"""
+                    You are a helpful assistant. Use the following PDF content to answer the user's question.
                     
-                    response = qa_chain.invoke({"question": prompt, "chat_history": st.session_state.chat_history})
-                    answer = response['answer']
+                    PDF CONTENT:
+                    {st.session_state.pdf_context}
                     
-                    st.session_state.chat_history.append((prompt, answer))
+                    USER QUESTION:
+                    {prompt}
+                    """
+                    
+                    response = llm.invoke(full_prompt)
+                    answer = response.content
+                    
                     st.markdown(answer)
-                    st.session_state.messages.append({"role": "assistant", "content": answer})
+                    st.session_state.chat_messages.append({"role": "assistant", "content": answer})
+                
                 except Exception as e:
-                    st.error(f"Chat Error: {e}")
-        else:
-            st.error("AI Brain not yet created. Upload a PDF and click 'Update AI Brain'.")
+                    st.error(f"AI Error: {e}")
+else:
+    if not API_KEY:
+        st.info("Please enter your API Key in the sidebar.")
+    elif not uploaded_file:
+        st.info("Please upload a PDF to start the chat.")
