@@ -1,90 +1,78 @@
 import streamlit as st
-import os
+import asyncio
 from PyPDF2 import PdfReader
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.schema import HumanMessage, SystemMessage
+
+# --- THE FIX: EVENT LOOP HELPER ---
+def get_or_create_eventloop():
+    try:
+        return asyncio.get_event_loop()
+    except RuntimeError as ex:
+        if "There is no current event loop in thread" in str(ex):
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            return asyncio.get_event_loop()
+        raise ex
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Simple Gemma Chat", layout="wide")
-st.title("📄 Simple PDF Chat (Direct Context)")
+st.set_page_config(page_title="Direct PDF Chat", page_icon="📄")
+st.title("📄 Simple PDF Chat (Gemma 3)")
 
-# --- API KEY ---
-if "GOOGLE_API_KEY" in st.secrets:
-    API_KEY = st.secrets["GOOGLE_API_KEY"]
-else:
-    API_KEY = st.sidebar.text_input("Google API Key", type="password")
+# Call the helper at the start
+get_or_create_eventloop()
 
-# --- PDF TEXT EXTRACTION ---
-def get_pdf_text(pdf_file):
-    text = ""
-    pdf_reader = PdfReader(pdf_file)
-    for page in pdf_reader.pages:
-        text += page.extract_text()
-    return text
-
-# --- SIDEBAR UPLOAD ---
+# --- SIDEBAR & API KEY ---
 with st.sidebar:
-    st.header("Upload Portal")
-    uploaded_file = st.file_uploader("Upload your PDF", type="pdf")
+    st.header("Settings")
+    if "GOOGLE_API_KEY" in st.secrets:
+        api_key = st.secrets["GOOGLE_API_KEY"]
+    else:
+        api_key = st.text_input("Enter Google API Key", type="password")
     
+    uploaded_file = st.file_uploader("Upload PDF", type="pdf")
     if st.button("Clear Chat"):
-        st.session_state.chat_messages = []
+        st.session_state.messages = []
         st.rerun()
 
 # --- SESSION STATE ---
-if "chat_messages" not in st.session_state:
-    st.session_state.chat_messages = []
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-# --- CHAT LOGIC ---
-if uploaded_file and API_KEY:
-    # 1. Extract text once and keep it in memory
-    if "pdf_context" not in st.session_state:
-        with st.spinner("Reading PDF..."):
-            st.session_state.pdf_context = get_pdf_text(uploaded_file)
-            st.success("PDF Loaded!")
+# --- CHAT UI ---
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
 
-    # 2. Display Chat History
-    for msg in st.session_state.chat_messages:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+# --- PROCESSING & CHAT ---
+if uploaded_file and api_key:
+    # 1. Extract text
+    reader = PdfReader(uploaded_file)
+    pdf_text = ""
+    for page in reader.pages:
+        pdf_text += page.extract_text()
 
-    # 3. User Input
-    if prompt := st.chat_input("Ask a question about this PDF..."):
-        st.session_state.chat_messages.append({"role": "user", "content": prompt})
+    # 2. Handle Chat
+    if prompt := st.chat_input("Ask about this PDF..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # 4. Get AI Response
         with st.chat_message("assistant"):
-            with st.spinner("Gemma 3 is reading and answering..."):
-                try:
-                    llm = ChatGoogleGenerativeAI(
-                        model="gemma-3-27b-it",
-                        google_api_key=API_KEY,
-                        temperature=0.3
-                    )
-                    
-                    # Create the context-aware prompt
-                    full_prompt = f"""
-                    You are a helpful assistant. Use the following PDF content to answer the user's question.
-                    
-                    PDF CONTENT:
-                    {st.session_state.pdf_context}
-                    
-                    USER QUESTION:
-                    {prompt}
-                    """
-                    
-                    response = llm.invoke(full_prompt)
-                    answer = response.content
-                    
-                    st.markdown(answer)
-                    st.session_state.chat_messages.append({"role": "assistant", "content": answer})
+            try:
+                # Force the LLM to run in the loop we created
+                llm = ChatGoogleGenerativeAI(
+                    model="gemma-3-27b-it", 
+                    google_api_key=api_key
+                )
                 
-                except Exception as e:
-                    st.error(f"AI Error: {e}")
+                context_prompt = f"Use this text to answer: {pdf_text}\n\nUser: {prompt}"
+                
+                # The LLM call is where the error used to happen
+                response = llm.invoke(context_prompt)
+                
+                st.markdown(response.content)
+                st.session_state.messages.append({"role": "assistant", "content": response.content})
+            except Exception as e:
+                st.error(f"AI Error: {e}")
 else:
-    if not API_KEY:
-        st.info("Please enter your API Key in the sidebar.")
-    elif not uploaded_file:
-        st.info("Please upload a PDF to start the chat.")
+    st.info("Upload a PDF and enter your API Key.")
