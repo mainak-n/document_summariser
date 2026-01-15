@@ -16,7 +16,7 @@ def get_or_create_eventloop():
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Direct PDF Chat", page_icon="📄")
-st.title("📄 Simple PDF Chat (Gemma 3)")
+st.title("📄 Simple PDF Chat")
 
 # Call the helper at the start
 get_or_create_eventloop()
