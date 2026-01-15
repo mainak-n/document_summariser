@@ -9,45 +9,46 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-# --- 1. CLEAN UI & PERMANENT SIDEBAR STYLING ---
+# --- 1. CLEAN UI & PERMANENT SIDEBAR ---
 st.set_page_config(page_title="Document Intelligence", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
     <style>
-    /* Hide Streamlit Branding & Footer */
+    /* Hide Branding */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
+    [data-testid="sidebar-close"] { display: none !important; }
     
-    /* ALWAYS SHOW SIDEBAR: Remove Hide Button */
-    [data-testid="sidebar-close"] {
-        display: none !important;
-    }
+    /* Clean Main Background */
+    .main { background-color: #ffffff; font-family: 'Segoe UI', sans-serif; }
     
-    /* Main Background & Fonts */
-    .main { background-color: #fcfcfc; font-family: 'Segoe UI', sans-serif; }
-    
-    /* Chat Bubbles */
+    /* FLAT CHAT BUBBLES: No shadows, light divider */
     [data-testid="stChatMessage"] {
-        background-color: #ffffff;
-        border-radius: 12px;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.05);
-        border: 1px solid #f0f0f0;
-        margin-bottom: 15px;
-        padding: 20px;
+        background-color: transparent;
+        border: none !important;
+        box-shadow: none !important;
+        margin-bottom: 20px;
+    }
+    [data-testid="stChatMessage"]::after {
+        content: "";
+        display: block;
+        padding-top: 15px;
+        border-bottom: 1px solid #f0f2f6;
     }
     
     /* Typography */
-    .stMarkdown p { font-size: 1.1rem; line-height: 1.6; color: #2c3e50; }
-    h1 { font-weight: 700; color: #1a1a1a; letter-spacing: -0.5px; }
+    .stMarkdown p { font-size: 1.1rem; line-height: 1.6; color: #1e293b; }
+    h1 { font-weight: 800; color: #0f172a; letter-spacing: -1px; }
     
-    /* LIGHT GREY CHAT INPUT BOX */
+    /* LIGHT GREY INPUT BOX */
     .stChatInputContainer {
-        border: 1px solid #D3D3D3 !important; 
-        border-radius: 12px !important;
+        border: 1px solid #e2e8f0 !important; 
+        border-radius: 8px !important;
+        background-color: #ffffff !important;
     }
 
     /* Sidebar Styling */
-    [data-testid="stSidebar"] { background-color: #ffffff; border-right: 1px solid #eee; }
+    [data-testid="stSidebar"] { background-color: #f8fafc; border-right: 1px solid #f1f5f9; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -64,17 +65,16 @@ if "indexed_files" not in st.session_state: st.session_state.indexed_files = set
 # --- 3. SIDEBAR ---
 with st.sidebar:
     st.title("Settings")
-    
     if "GOOGLE_API_KEY" in st.secrets:
         os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
     else:
-        user_key = st.text_input("Enter Access Key", type="password")
+        user_key = st.text_input("Access Key", type="password", placeholder="Enter Google API Key")
         if user_key: os.environ["GOOGLE_API_KEY"] = user_key
 
     uploaded_files = st.file_uploader("Upload Documents", type="pdf", accept_multiple_files=True)
     
     st.divider()
-    if st.button("Reset Knowledge Base", use_container_width=True):
+    if st.button("Reset System", use_container_width=True):
         st.session_state.clear()
         st.rerun()
 
@@ -87,18 +87,15 @@ def update_intelligence(files):
     new_files = [f for f in files if f.name not in st.session_state.indexed_files]
     if not new_files: return
 
-    # Updated Status: Creating Vector Database
     with st.status("Reading Documents & Creating Vector Database...", expanded=False) as status:
         all_new_docs = []
         for f in new_files:
             reader = PdfReader(f)
             text = "".join([p.extract_text() or "" for p in reader.pages])
-            
             splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
             chunks = splitter.split_text(text)
             for chunk in chunks:
                 all_new_docs.append(Document(page_content=chunk, metadata={"source": f.name}))
-            
             st.session_state.indexed_files.add(f.name)
 
         embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", transport="rest")
@@ -113,32 +110,31 @@ def update_intelligence(files):
             for i in range(0, len(remaining), 5):
                 safe_append_docs(st.session_state.brain, remaining[i:i+5])
                 time.sleep(0.3)
-        
-        status.update(label="Vector Database Ready", state="complete")
+        status.update(label="Knowledge Base Updated", state="complete")
 
 if uploaded_files and os.getenv("GOOGLE_API_KEY"):
     update_intelligence(uploaded_files)
 
 # --- 5. MAIN INTERFACE ---
 st.title("Document Analysis")
-st.markdown("Query your uploaded documents using natural language.")
 
 # Display Chat History
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-if prompt := st.chat_input("Ask a question..."):
+if prompt := st.chat_input("Ask a question about your documents..."):
     if not os.getenv("GOOGLE_API_KEY"):
-        st.error("Missing API Key in Sidebar.")
+        st.info("Please provide an API key in the sidebar.")
     elif not st.session_state.brain:
-        st.warning("Please upload documents first.")
+        st.info("Please upload documents to begin.")
     else:
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"): st.markdown(prompt)
 
         with st.chat_message("assistant"):
-            # Added Status: Thinking.......
+            final_answer = ""
+            # Status: Thinking.......
             with st.status("Thinking.......", expanded=False) as status:
                 try:
                     llm = ChatGoogleGenerativeAI(model="gemma-3-27b-it", transport="rest")
@@ -150,19 +146,21 @@ if prompt := st.chat_input("Ask a question..."):
                         context += f"\n[{d.metadata['source']}]: {d.page_content}\n"
                     
                     full_prompt = (
-                        f"Use the context below to provide a professional answer. "
-                        f"At the end, list sources used.\n\n"
+                        f"Provide a professional answer using the context below. "
+                        f"List sources at the end.\n\n"
                         f"Context:\n{context}\n\n"
-                        f"User Question: {prompt}"
+                        f"Question: {prompt}"
                     )
                     
                     response = llm.invoke(full_prompt)
                     final_answer = response.content
-                    status.update(label="Response Generated", state="complete")
-                    
-                    st.markdown(final_answer)
-                    st.session_state.messages.append({"role": "assistant", "content": final_answer})
+                    status.update(label="Complete", state="complete")
                     
                 except Exception as e:
                     status.update(label="Error", state="error")
                     st.error(f"Analysis failed: {e}")
+
+            # Display response OUTSIDE of status to ensure it stays visible
+            if final_answer:
+                st.markdown(final_answer)
+                st.session_state.messages.append({"role": "assistant", "content": final_answer})
