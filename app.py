@@ -180,7 +180,7 @@ if prompt := st.chat_input("Inquire about your documents..."):
                     
                     full_prompt = (
                         f"Provide a sophisticated, professional answer based on the context. "
-                        f"List citations at the end. Use plain text.\n\n"
+                        f"List citations at the end. Use plain text.No need for page numbers\n\n"
                         f"Context:\n{context}\n\n"
                         f"Query: {prompt}"
                     )
